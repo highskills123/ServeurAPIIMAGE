@@ -13,10 +13,16 @@ class Settings(BaseSettings):
 
     STRIPE_SECRET_KEY: str | None = None
     STRIPE_WEBHOOK_SECRET: str | None = None
+    STRIPE_PRICE_STARTER_ID: str | None = None
+    STRIPE_PRICE_PRO_ID: str | None = None
+    STRIPE_PRICE_BUSINESS_ID: str | None = None
 
+    FREE_MONTHLY_LIMIT: int = 20
     STARTER_MONTHLY_LIMIT: int = 300
     PRO_MONTHLY_LIMIT: int = 1000
     BUSINESS_MONTHLY_LIMIT: int = 5000
+
+    GENERATE_RATE_LIMIT: str = "20/minute"
 
     MODEL_ID: str = "stabilityai/sdxl-turbo"
     DEFAULT_STEPS: int = 4

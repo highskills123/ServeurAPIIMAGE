@@ -68,5 +68,15 @@ services:
           devices:
             - capabilities: [gpu]
 
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./data:/data:ro
+    depends_on:
+      - backend
+
 volumes:
   pgdata:
