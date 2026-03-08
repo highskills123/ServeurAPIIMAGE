@@ -9,6 +9,8 @@ def yyyymm_now() -> str:
 
 
 def plan_limit(plan: Plan) -> int:
+    if plan == Plan.free:
+        return settings.FREE_MONTHLY_LIMIT
     if plan == Plan.starter:
         return settings.STARTER_MONTHLY_LIMIT
     if plan == Plan.pro:

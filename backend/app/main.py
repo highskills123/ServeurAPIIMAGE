@@ -1,6 +1,9 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from .db import Base, engine
 from .storage import ensure_dirs
 from .routes.auth_routes import router as auth_router
@@ -8,7 +11,11 @@ from .routes.image_routes import router as image_router
 from .routes.billing_routes import router as billing_router
 from .config import settings
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="PixelForge AI API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 Base.metadata.create_all(bind=engine)
 ensure_dirs()
