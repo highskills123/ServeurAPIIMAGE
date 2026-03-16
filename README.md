@@ -7,9 +7,15 @@ A self-hosted REST API for AI-powered image generation using Stable Diffusion (S
 
 ---
 
+> 📱 **Mobile & Web client available!**
+> The [`mobile/`](mobile/) directory contains a React Native (Expo) app that works as both an **Android app** (Google Play Store) and a **website**. See [mobile/README.md](mobile/README.md) for setup instructions.
+
+---
+
 ## Table of Contents
 
 - [What It Does](#what-it-does)
+- [Mobile & Web Client](#mobile--web-client)
 - [Architecture](#architecture)
 - [Plans & Pricing](#plans--pricing)
 - [Prerequisites](#prerequisites)
@@ -30,6 +36,19 @@ A self-hosted REST API for AI-powered image generation using Stable Diffusion (S
 - **Poll job status** and get the image URL once generation is complete.
 - **Browse pricing plans** and upgrade via Stripe Checkout.
 - **Prompt caching** – identical prompts with the same parameters reuse the generated image for 24 hours (no GPU work repeated).
+
+---
+
+## Mobile & Web Client
+
+A ready-to-use client lives in the [`mobile/`](mobile/) directory. It is built with **React Native (Expo)** and runs on:
+
+| Target | How |
+|--------|-----|
+| 🌐 **Website** | `npm run export:web` → upload `dist/` to Vercel / Netlify / S3 |
+| 📱 **Android (Google Play)** | `eas build --platform android` → upload the `.aab` to the Play Console |
+
+See **[mobile/README.md](mobile/README.md)** for full setup and deployment instructions.
 
 ---
 
