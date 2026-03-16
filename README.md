@@ -4,6 +4,14 @@
 
 ---
 
+## Sample Generated Image
+
+> Prompt: *"a futuristic city at sunset"* — `POST /images/generate`, model `stabilityai/sdxl-turbo`, 1024×1024, 4 steps
+
+![Sample generated image – a futuristic city at sunset](docs/sample_output.png)
+
+---
+
 ## What It Does
 
 ServeurAPIIMAGE provides a complete backend service that lets users:
@@ -59,7 +67,7 @@ Call `POST /billing/checkout` (authenticated) to create a Stripe Checkout Sessio
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) & [Docker Compose](https://docs.docker.com/compose/install/) v2+
-- NVIDIA GPU(s) with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed (required for the GPU workers)
+- NVIDIA GPU(s) with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed (required for GPU workers; CPU fallback is available for development)
 - Git
 
 ---
@@ -90,7 +98,7 @@ Key variables to update:
 | `POSTGRES_DB` | PostgreSQL database name |
 | `DATABASE_URL` | Full SQLAlchemy connection string |
 | `REDIS_URL` | Redis connection URL |
-| `JWT_SECRET` | Secret key used to sign JWT tokens |
+| `JWT_SECRET` | Secret key used to sign JWT tokens (use a long random string in production) |
 | `JWT_EXPIRES_MIN` | Token expiry in minutes (default: 10080 = 7 days) |
 | `DATA_DIR` | Directory where generated images are stored |
 | `PUBLIC_BASE_URL` | Public base URL of the API (used to build image URLs) |
@@ -121,6 +129,44 @@ This starts:
 - FastAPI backend on port `8000`
 - Two GPU workers (`worker_gpu0` on GPU 0, `worker_gpu1` on GPU 1)
 - **Nginx** on port `80` (reverse proxy + rate limiter)
+
+---
+
+## Quick Start: Generate Your First Image
+
+Once the stack is running, use `curl` (or any HTTP client) to generate an image in three steps.
+
+> **Tip:** all endpoints return JSON. If a command returns an error message instead of the expected field, check the HTTP status code with `curl -s -o /dev/null -w "%{http_code}"` before parsing the response.
+
+**Step 1 – Register and get a token:**
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"yourpassword"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+```
+
+**Step 2 – Submit a generation job:**
+
+```bash
+JOB=$(curl -s -X POST http://localhost/images/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"a futuristic city at sunset","width":1024,"height":1024,"steps":4,"guidance":0.0}')
+echo $JOB   # {"id":1,"status":"queued","image_url":null,"error":null}
+JOB_ID=$(echo $JOB | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+```
+
+**Step 3 – Poll until done and download the image:**
+
+```bash
+curl -s http://localhost/images/$JOB_ID \
+  -H "Authorization: Bearer $TOKEN"
+# {"id":1,"status":"done","image_url":"http://localhost/files/images/1_abc123.png","error":null}
+```
+
+Once `status` is `done`, open `image_url` in your browser or download it with `curl`.
 
 ---
 
@@ -219,6 +265,55 @@ Protection is applied at two layers:
 
 ---
 
+## GPU & CPU Support
+
+The AI worker automatically selects the best available device at startup:
+
+| Environment | Device | dtype | Notes |
+|-------------|--------|-------|-------|
+| Machine with NVIDIA GPU | `cuda` | `float16` | Full speed; attention slicing enabled |
+| CPU-only machine | `cpu` | `float32` | Works for development; generation is ~10–30× slower than GPU (expect several minutes per image) |
+
+The `MODEL_ID` environment variable controls which Hugging Face model is loaded (default: `stabilityai/sdxl-turbo`). Any `diffusers`-compatible text-to-image model can be used.
+
+---
+
+## Testing
+
+The backend ships with an integration test suite that runs entirely without Docker, PostgreSQL, Redis, or a GPU. It uses an in-memory SQLite database, `fakeredis`, and a stub image generator.
+
+**Install test dependencies:**
+
+```bash
+pip install -r backend/requirements-test.txt
+```
+
+**Run the tests:**
+
+```bash
+cd backend
+pytest tests/ -v
+```
+
+**What is covered (12 tests):**
+
+| Test | What it validates |
+|------|-------------------|
+| `test_health_check` | `/health` endpoint responds |
+| `test_signup_creates_user` | New user registration |
+| `test_login_returns_token` | JWT token issued on login |
+| `test_duplicate_signup_rejected` | Duplicate email rejected (400) |
+| `test_me_endpoint` | Current user info (`/auth/me`) |
+| `test_generate_image_full_flow` | POST → poll → PNG written to disk |
+| `test_list_jobs` | `GET /images/` returns all user jobs |
+| `test_generate_prompt_too_short` | Short prompts rejected (422) |
+| `test_generate_invalid_dimensions` | Invalid dimensions rejected (422) |
+| `test_generate_requires_auth` | Unauthenticated requests rejected (401) |
+| `test_prompt_cache_reuses_image` | Same prompt+params returns the cached image URL |
+| `test_monthly_limit_enforced` | Monthly quota enforced (402 when exceeded) |
+
+---
+
 ## Project Structure
 
 ```
@@ -226,25 +321,31 @@ ServeurAPIIMAGE/
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
+│   ├── requirements-test.txt    # Test-only dependencies (pytest, fakeredis, Pillow, httpx)
+│   ├── tests/
+│   │   └── test_generate.py     # Integration tests (no GPU, no Docker required)
 │   └── app/
-│       ├── main.py          # FastAPI app + SlowAPI rate limiter setup
-│       ├── models.py        # SQLAlchemy ORM models (User, ImageJob, UsageMonthly)
-│       ├── schemas.py       # Pydantic request/response schemas + validators
-│       ├── auth.py          # Password hashing & JWT helpers
-│       ├── billing.py       # Quota management (all four plans)
-│       ├── config.py        # Settings (pydantic-settings)
-│       ├── db.py            # Database session
-│       ├── deps.py          # FastAPI dependencies (current user)
-│       ├── storage.py       # File storage helpers
-│       ├── ai/              # AI model loading & inference
-│       ├── jobs/            # RQ job definitions, queue setup & prompt cache
-│       └── routes/          # API route handlers
+│       ├── main.py              # FastAPI app + SlowAPI rate limiter setup
+│       ├── models.py            # SQLAlchemy ORM models (User, ImageJob, UsageMonthly)
+│       ├── schemas.py           # Pydantic request/response schemas + validators
+│       ├── auth.py              # Password hashing & JWT helpers
+│       ├── billing.py           # Quota management (all four plans)
+│       ├── config.py            # Settings (pydantic-settings)
+│       ├── db.py                # Database session
+│       ├── deps.py              # FastAPI dependencies (current user)
+│       ├── storage.py           # File storage helpers
+│       ├── ai/
+│       │   └── pipeline.py      # Model loading & inference (auto GPU/CPU)
+│       ├── jobs/                # RQ job definitions, queue setup & prompt cache
+│       └── routes/              # API route handlers
 ├── worker/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   └── worker.py            # RQ worker entry point
+│   └── worker.py                # RQ worker entry point
 ├── nginx/
-│   └── nginx.conf           # Nginx reverse proxy + rate limiting config
+│   └── nginx.conf               # Nginx reverse proxy + rate limiting config
+├── docs/
+│   └── sample_output.png        # Sample image generated by the API
 ├── docker-compose.yml
 ├── .env.example
 └── README.md
