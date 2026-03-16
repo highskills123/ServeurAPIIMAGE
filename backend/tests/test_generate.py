@@ -11,12 +11,13 @@ GET /images/{job_id}) without touching real PostgreSQL, Redis, or GPU hardware:
 """
 import os
 import sys
+import tempfile
 
 # ── Environment variables must be set BEFORE any app module is imported ────────
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-key-for-tests-only")
-os.environ.setdefault("DATA_DIR", "/tmp/pixelforge-test")
+os.environ.setdefault("DATA_DIR", os.path.join(tempfile.gettempdir(), "pixelforge-test"))
 os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
 
 # Ensure the backend/ directory is on sys.path so 'app' is importable
