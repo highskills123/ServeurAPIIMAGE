@@ -1,0 +1,314 @@
+"""
+Integration tests for image generation.
+
+These tests exercise the full HTTP flow (sign-up → POST /images/generate →
+GET /images/{job_id}) without touching real PostgreSQL, Redis, or GPU hardware:
+
+  - SQLite in-memory replaces PostgreSQL.
+  - fakeredis replaces the real Redis / RQ connection.
+  - A stub replaces the heavy torch/diffusers pipeline.
+  - Jobs are executed synchronously (inline) instead of via an RQ worker.
+"""
+import os
+import sys
+
+# ── Environment variables must be set BEFORE any app module is imported ────────
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-key-for-tests-only")
+os.environ.setdefault("DATA_DIR", "/tmp/pixelforge-test")
+os.environ.setdefault("PUBLIC_BASE_URL", "http://testserver")
+
+# Ensure the backend/ directory is on sys.path so 'app' is importable
+_BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+import fakeredis
+from PIL import Image
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.db import Base, get_db
+from app.main import app
+from app.config import settings as _settings
+
+# ── Shared in-memory SQLite database (StaticPool = single shared connection) ───
+_engine = create_engine(
+    "sqlite:///:memory:",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+_TestSession = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
+
+
+def _override_get_db():
+    """FastAPI dependency override: use the SQLite test session."""
+    db = _TestSession()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ── Stub AI pipeline ───────────────────────────────────────────────────────────
+
+def _fake_generate_image(prompt: str, width: int, height: int,
+                         steps: int, guidance: float, out_path: str) -> str:
+    """Creates a solid-colour PNG without loading torch or any AI model."""
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    img = Image.new("RGB", (width, height), color=(73, 109, 137))
+    img.save(out_path)
+    return out_path
+
+
+# ── pytest fixture ─────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def client(tmp_path):
+    """
+    Provides a TestClient wired to:
+      - an in-memory SQLite database (instead of PostgreSQL)
+      - fakeredis (instead of real Redis)
+      - a stub image generator (instead of the real AI model)
+      - synchronous job execution (instead of the RQ worker process)
+    """
+    Base.metadata.create_all(bind=_engine)
+
+    data_dir = str(tmp_path)
+    os.makedirs(os.path.join(data_dir, "images"), exist_ok=True)
+
+    fake_redis = fakeredis.FakeRedis()
+
+    def _sync_enqueue(func, *args, **kwargs):
+        """Run the RQ job inline (synchronously) so tests don't need a worker."""
+        with patch("app.jobs.tasks.SessionLocal", _TestSession), \
+             patch.object(_settings, "DATA_DIR", data_dir):
+            func(*args, **kwargs)
+        mock_job = MagicMock()
+        mock_job.id = "sync-test-job"
+        return mock_job
+
+    app.dependency_overrides[get_db] = _override_get_db
+
+    with patch("app.jobs.queue.redis_client", fake_redis), \
+         patch("app.routes.image_routes.redis_client", fake_redis), \
+         patch("app.jobs.tasks.redis_client", fake_redis), \
+         patch("app.jobs.queue.q.enqueue", side_effect=_sync_enqueue), \
+         patch("app.jobs.tasks.generate_image", side_effect=_fake_generate_image), \
+         patch.object(_settings, "DATA_DIR", data_dir):
+        with TestClient(app) as c:
+            yield c
+
+    app.dependency_overrides.clear()
+    Base.metadata.drop_all(bind=_engine)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _signup_and_login(client: TestClient, email: str = "user@example.com",
+                      password: str = "secret123") -> str:
+    """Register a user and return the JWT bearer token."""
+    r = client.post("/auth/signup", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()["access_token"]
+
+
+# ── Tests ──────────────────────────────────────────────────────────────────────
+
+def test_health_check(client):
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+def test_signup_creates_user(client):
+    r = client.post("/auth/signup",
+                    json={"email": "new@example.com", "password": "pass1234"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+
+
+def test_login_returns_token(client):
+    token = _signup_and_login(client, "login@example.com", "mypassword")
+    assert isinstance(token, str) and len(token) > 10
+
+
+def test_duplicate_signup_rejected(client):
+    _signup_and_login(client, "dup@example.com", "pw")
+    r = client.post("/auth/signup",
+                    json={"email": "dup@example.com", "password": "pw"})
+    assert r.status_code == 400
+
+
+def test_me_endpoint(client):
+    token = _signup_and_login(client, "me@example.com", "pw123456")
+    r = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["email"] == "me@example.com"
+    assert data["plan"] == "free"
+
+
+def test_generate_image_full_flow(client, tmp_path):
+    """
+    End-to-end test: sign up → submit a generation request → poll job status →
+    verify the job completes and the image file actually exists on disk.
+    """
+    token = _signup_and_login(client, "gen@example.com", "genpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Submit a generation job
+    payload = {
+        "prompt": "a futuristic city at sunset",
+        "width": 512,
+        "height": 512,
+        "steps": 1,
+        "guidance": 0.0,
+    }
+    r = client.post("/images/generate", json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    job_data = r.json()
+    assert "id" in job_data
+
+    # POST /images/generate always returns "queued" immediately (async design).
+    # Because _sync_enqueue runs the job inline, the job is already processed by
+    # the time we poll GET /images/{id}.
+    job_id = job_data["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.status_code == 200
+    job_data2 = r2.json()
+
+    assert job_data2["status"] == "done", (
+        f"Expected status 'done' but got '{job_data2['status']}'. "
+        f"Error: {job_data2.get('error')}"
+    )
+
+    # The response must include an image URL
+    image_url = job_data2.get("image_url")
+    assert image_url is not None, "image_url should not be None when status is done"
+    assert image_url.startswith("http"), f"Unexpected image_url: {image_url}"
+
+    # Confirm the PNG was written to disk
+    filename = image_url.split("/")[-1]
+    data_dir = str(tmp_path)
+    image_file = os.path.join(data_dir, "images", filename)
+    assert os.path.isfile(image_file), f"PNG not found at {image_file}"
+
+    img = Image.open(image_file)
+    assert img.size == (512, 512)
+    assert img.mode == "RGB"
+
+
+def test_list_jobs(client):
+    """GET /images/ returns all jobs for the authenticated user."""
+    token = _signup_and_login(client, "list@example.com", "listpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Generate two images
+    for _ in range(2):
+        client.post("/images/generate",
+                    json={"prompt": "test prompt abc", "width": 256,
+                          "height": 256, "steps": 1, "guidance": 0.0},
+                    headers=headers)
+
+    r = client.get("/images/", headers=headers)
+    assert r.status_code == 200
+    jobs = r.json()
+    assert len(jobs) == 2
+    for j in jobs:
+        assert j["status"] == "done"
+
+
+def test_generate_prompt_too_short(client):
+    token = _signup_and_login(client, "val@example.com", "valpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post("/images/generate",
+                    json={"prompt": "ab", "width": 512, "height": 512,
+                          "steps": 1, "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 422
+
+
+def test_generate_invalid_dimensions(client):
+    token = _signup_and_login(client, "dim@example.com", "dimpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post("/images/generate",
+                    json={"prompt": "valid prompt here", "width": 300,
+                          "height": 512, "steps": 1, "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 422
+
+
+def test_generate_requires_auth(client):
+    r = client.post("/images/generate",
+                    json={"prompt": "no auth test", "width": 512,
+                          "height": 512, "steps": 1, "guidance": 0.0})
+    assert r.status_code == 401
+
+
+def test_prompt_cache_reuses_image(client):
+    """
+    Generating the same prompt+params twice should reuse the cached image
+    (no second AI call) and both jobs should reference the same image path.
+    """
+    token = _signup_and_login(client, "cache@example.com", "cachepass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payload = {"prompt": "a red apple on a table", "width": 256,
+               "height": 256, "steps": 1, "guidance": 0.0}
+
+    # First request – queued and processed inline by _sync_enqueue
+    r1 = client.post("/images/generate", json=payload, headers=headers)
+    assert r1.status_code == 200
+    job_id1 = r1.json()["id"]
+
+    # Poll to get the actual image_url after processing
+    r1_poll = client.get(f"/images/{job_id1}", headers=headers)
+    assert r1_poll.json()["status"] == "done"
+    url1 = r1_poll.json()["image_url"]
+    assert url1 is not None
+
+    # Second request with identical prompt+params – must be a cache hit.
+    # The cache-hit branch sets image_url in the POST response directly.
+    r2 = client.post("/images/generate", json=payload, headers=headers)
+    assert r2.status_code == 200
+    url2 = r2.json()["image_url"]
+
+    # Both requests should return the same image URL (served from cache)
+    assert url1 == url2, "Prompt cache should return the same image URL"
+
+
+def test_monthly_limit_enforced(client):
+    """Users on the free plan cannot exceed FREE_MONTHLY_LIMIT images."""
+    # Use a very small limit so we stay well under the 20/minute rate limiter
+    small_limit = 3
+
+    with patch.object(_settings, "FREE_MONTHLY_LIMIT", small_limit):
+        token = _signup_and_login(client, "limit@example.com", "limitpass1")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Use unique prompts so each request counts against the monthly quota
+        def _make_payload(i: int) -> dict:
+            return {"prompt": f"mountain landscape variant {i}", "width": 256,
+                    "height": 256, "steps": 1, "guidance": 0.0}
+
+        for i in range(small_limit):
+            r = client.post("/images/generate", json=_make_payload(i), headers=headers)
+            assert r.status_code == 200, (
+                f"Request {i + 1} failed with {r.status_code}: {r.text}"
+            )
+
+        # The next request must be rejected with 402
+        r_over = client.post("/images/generate",
+                             json=_make_payload(small_limit), headers=headers)
+        assert r_over.status_code == 402, (
+            f"Expected 402 after exceeding monthly limit, got {r_over.status_code}"
+        )

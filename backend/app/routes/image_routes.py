@@ -11,6 +11,7 @@ from ..billing import check_and_consume_image
 from ..jobs.queue import q, redis_client
 from ..jobs.tasks import run_generate
 from ..storage import public_url_from_path
+from ..config import settings
 
 router = APIRouter(prefix="/images", tags=["images"])
 limiter = Limiter(key_func=get_remote_address)
