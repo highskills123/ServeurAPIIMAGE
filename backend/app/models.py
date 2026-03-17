@@ -44,6 +44,12 @@ class JobStatus(str, enum.Enum):
     failed = "failed"
 
 
+class JobType(str, enum.Enum):
+    image = "image"
+    spritesheet = "spritesheet"
+    game_asset = "game_asset"
+
+
 class ImageJob(Base):
     __tablename__ = "image_jobs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -54,6 +60,11 @@ class ImageJob(Base):
     height: Mapped[int] = mapped_column(Integer, default=1024)
     steps: Mapped[int] = mapped_column(Integer, default=4)
     guidance: Mapped[float] = mapped_column(Float, default=0.0)
+
+    job_type: Mapped[JobType] = mapped_column(Enum(JobType), default=JobType.image)
+    # Sprite sheet columns (rows/cols define the grid layout)
+    rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cols: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.queued)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

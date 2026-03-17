@@ -68,6 +68,41 @@ def _fake_generate_image(prompt: str, width: int, height: int,
     return out_path
 
 
+def _fake_generate_spritesheet(
+    prompt: str,
+    rows: int,
+    cols: int,
+    frame_width: int,
+    frame_height: int,
+    steps: int,
+    guidance: float,
+    out_path: str,
+) -> str:
+    """Creates a solid-colour sprite sheet PNG without loading any AI model."""
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    sheet = Image.new("RGBA", (cols * frame_width, rows * frame_height), color=(100, 149, 237, 255))
+    sheet.save(out_path, format="PNG")
+    return out_path
+
+
+def _fake_generate_game_asset(
+    prompt: str,
+    asset_type: str,
+    size: str,
+    style: str,
+    steps: int,
+    guidance: float,
+    out_path: str,
+) -> str:
+    """Creates a solid-colour game asset PNG without loading any AI model."""
+    from app.ai.pipeline import _ASSET_DIMENSIONS
+    dims = _ASSET_DIMENSIONS.get(asset_type, {}).get(size, (512, 512))
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    img = Image.new("RGB", dims, color=(200, 100, 50))
+    img.save(out_path)
+    return out_path
+
+
 # ── pytest fixture ─────────────────────────────────────────────────────────────
 
 @pytest.fixture()
@@ -102,6 +137,8 @@ def client(tmp_path):
          patch("app.jobs.tasks.redis_client", fake_redis), \
          patch("app.jobs.queue.q.enqueue", side_effect=_sync_enqueue), \
          patch("app.jobs.tasks.generate_image", side_effect=_fake_generate_image), \
+         patch("app.jobs.tasks.generate_spritesheet", side_effect=_fake_generate_spritesheet), \
+         patch("app.jobs.tasks.generate_game_asset", side_effect=_fake_generate_game_asset), \
          patch.object(_settings, "DATA_DIR", data_dir):
         with TestClient(app) as c:
             yield c
@@ -178,6 +215,7 @@ def test_generate_image_full_flow(client, tmp_path):
     assert r.status_code == 200, r.text
     job_data = r.json()
     assert "id" in job_data
+    assert job_data["job_type"] == "image"
 
     # POST /images/generate always returns "queued" immediately (async design).
     # Because _sync_enqueue runs the job inline, the job is already processed by
@@ -313,3 +351,177 @@ def test_monthly_limit_enforced(client):
         assert r_over.status_code == 402, (
             f"Expected 402 after exceeding monthly limit, got {r_over.status_code}"
         )
+
+
+# ── Sprite sheet tests ─────────────────────────────────────────────────────────
+
+def test_spritesheet_full_flow(client, tmp_path):
+    """End-to-end test for sprite sheet generation: 2×4 grid of 128×128 frames."""
+    token = _signup_and_login(client, "sheet@example.com", "sheetpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payload = {
+        "prompt": "running knight character animation",
+        "rows": 2,
+        "cols": 4,
+        "frame_width": 128,
+        "frame_height": 128,
+        "steps": 1,
+        "guidance": 0.0,
+    }
+    r = client.post("/images/spritesheet", json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    job_data = r.json()
+    assert job_data["job_type"] == "spritesheet"
+
+    job_id = job_data["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.status_code == 200
+    job_data2 = r2.json()
+    assert job_data2["status"] == "done", f"Error: {job_data2.get('error')}"
+
+    image_url = job_data2["image_url"]
+    assert image_url is not None
+
+    # Verify the sprite sheet dimensions: cols*frame_width × rows*frame_height
+    filename = image_url.split("/")[-1]
+    image_file = os.path.join(str(tmp_path), "images", filename)
+    assert os.path.isfile(image_file), f"Sprite sheet not found at {image_file}"
+
+    img = Image.open(image_file)
+    assert img.size == (4 * 128, 2 * 128), f"Unexpected size: {img.size}"
+
+
+def test_spritesheet_requires_auth(client):
+    r = client.post("/images/spritesheet",
+                    json={"prompt": "warrior", "rows": 1, "cols": 2,
+                          "frame_width": 64, "frame_height": 64,
+                          "steps": 1, "guidance": 0.0})
+    assert r.status_code == 401
+
+
+def test_spritesheet_invalid_rows(client):
+    """rows must be between 1 and 8."""
+    token = _signup_and_login(client, "sval@example.com", "svalpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post("/images/spritesheet",
+                    json={"prompt": "knight", "rows": 0, "cols": 2,
+                          "frame_width": 128, "frame_height": 128,
+                          "steps": 1, "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 422
+
+
+def test_spritesheet_invalid_frame_size(client):
+    """frame_width must be one of 64, 128, 256."""
+    token = _signup_and_login(client, "sfr@example.com", "sfrpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post("/images/spritesheet",
+                    json={"prompt": "knight", "rows": 1, "cols": 2,
+                          "frame_width": 100, "frame_height": 128,
+                          "steps": 1, "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 422
+
+
+def test_spritesheet_quota_counts_frames(client):
+    """A 2×3 sprite sheet should consume 6 images from the monthly quota."""
+    small_limit = 5  # Fewer than the 6 frames the sheet requires
+
+    with patch.object(_settings, "FREE_MONTHLY_LIMIT", small_limit):
+        token = _signup_and_login(client, "squo@example.com", "squopass1")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        r = client.post("/images/spritesheet",
+                        json={"prompt": "goblin walk cycle", "rows": 2, "cols": 3,
+                              "frame_width": 64, "frame_height": 64,
+                              "steps": 1, "guidance": 0.0},
+                        headers=headers)
+        assert r.status_code == 402, (
+            f"Expected 402 because 6 frames > limit of {small_limit}, got {r.status_code}"
+        )
+
+
+# ── Game asset tests ───────────────────────────────────────────────────────────
+
+def test_game_asset_character_full_flow(client, tmp_path):
+    """End-to-end test: generate a medium character game asset."""
+    token = _signup_and_login(client, "asset@example.com", "assetpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payload = {
+        "prompt": "brave knight with sword and shield",
+        "asset_type": "character",
+        "size": "medium",
+        "style": "cartoon",
+        "steps": 1,
+        "guidance": 0.0,
+    }
+    r = client.post("/images/game-asset", json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    job_data = r.json()
+    assert job_data["job_type"] == "game_asset"
+
+    job_id = job_data["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.status_code == 200
+    job_data2 = r2.json()
+    assert job_data2["status"] == "done", f"Error: {job_data2.get('error')}"
+
+    image_url = job_data2["image_url"]
+    assert image_url is not None
+
+    filename = image_url.split("/")[-1]
+    image_file = os.path.join(str(tmp_path), "images", filename)
+    assert os.path.isfile(image_file), f"Game asset PNG not found at {image_file}"
+
+    img = Image.open(image_file)
+    # medium character → 512×512
+    assert img.size == (512, 512), f"Unexpected size: {img.size}"
+
+
+def test_game_asset_all_types_accepted(client):
+    """All defined asset types should be accepted by the endpoint."""
+    token = _signup_and_login(client, "alltype@example.com", "alltypepass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    for asset_type in ("character", "item", "background", "icon", "ui_element"):
+        r = client.post("/images/game-asset",
+                        json={"prompt": "test asset for game",
+                              "asset_type": asset_type,
+                              "size": "small",
+                              "style": "pixel art",
+                              "steps": 1,
+                              "guidance": 0.0},
+                        headers=headers)
+        assert r.status_code == 200, f"Failed for asset_type={asset_type}: {r.text}"
+        assert r.json()["job_type"] == "game_asset"
+
+
+def test_game_asset_invalid_type(client):
+    """Unknown asset_type should be rejected with 422."""
+    token = _signup_and_login(client, "invtype@example.com", "invtypepass1")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post("/images/game-asset",
+                    json={"prompt": "test", "asset_type": "dragon",
+                          "size": "medium", "steps": 1, "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 422
+
+
+def test_game_asset_requires_auth(client):
+    r = client.post("/images/game-asset",
+                    json={"prompt": "coin sprite", "asset_type": "item",
+                          "size": "small", "steps": 1, "guidance": 0.0})
+    assert r.status_code == 401
+
+
+def test_game_asset_style_too_long(client):
+    """style must not exceed 100 characters."""
+    token = _signup_and_login(client, "stylelen@example.com", "stylelenpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post("/images/game-asset",
+                    json={"prompt": "coin", "asset_type": "item", "size": "small",
+                          "style": "x" * 101, "steps": 1, "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 422
