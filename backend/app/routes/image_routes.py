@@ -5,11 +5,11 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import User, ImageJob, JobStatus
-from ..schemas import GenerateIn, JobOut
+from ..models import User, ImageJob, JobStatus, JobType
+from ..schemas import GenerateIn, SpritesheetIn, GameAssetIn, JobOut
 from ..billing import check_and_consume_image
 from ..jobs.queue import q, redis_client
-from ..jobs.tasks import run_generate
+from ..jobs.tasks import run_generate, run_generate_spritesheet, run_generate_game_asset
 from ..storage import public_url_from_path
 from ..config import settings
 
@@ -50,7 +50,7 @@ def generate(request: Request, payload: GenerateIn, db: Session = Depends(get_db
         db.commit()
         db.refresh(job)
         url = public_url_from_path(job.image_path)
-        return JobOut(id=job.id, status=job.status.value, image_url=url)
+        return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value, image_url=url)
 
     job = ImageJob(
         user_id=user.id,
@@ -67,7 +67,96 @@ def generate(request: Request, payload: GenerateIn, db: Session = Depends(get_db
 
     q.enqueue(run_generate, job.id, cache_key, _CACHE_TTL)
 
-    return JobOut(id=job.id, status=job.status.value)
+    return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value)
+
+
+@router.post("/spritesheet", response_model=JobOut)
+@limiter.limit(settings.GENERATE_RATE_LIMIT)
+def generate_spritesheet_endpoint(
+    request: Request,
+    payload: SpritesheetIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate a sprite sheet containing rows×cols frames of the requested subject.
+
+    Each frame counts as one image against the user's monthly quota, so a 2×4
+    sheet consumes 8 images.  The output is a single PNG file with all frames
+    arranged in a grid.
+    """
+    frame_count = payload.rows * payload.cols
+    ok, limit, used = check_and_consume_image(db, user, frame_count)
+    if not ok:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Monthly limit reached ({used}/{limit}). "
+                   f"This sprite sheet requires {frame_count} images. Upgrade needed.",
+        )
+
+    sheet_width = payload.cols * payload.frame_width
+    sheet_height = payload.rows * payload.frame_height
+
+    job = ImageJob(
+        user_id=user.id,
+        prompt=payload.prompt,
+        width=sheet_width,
+        height=sheet_height,
+        steps=payload.steps,
+        guidance=payload.guidance,
+        job_type=JobType.spritesheet,
+        rows=payload.rows,
+        cols=payload.cols,
+        status=JobStatus.queued,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    q.enqueue(run_generate_spritesheet, job.id)
+
+    return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value)
+
+
+@router.post("/game-asset", response_model=JobOut)
+@limiter.limit(settings.GENERATE_RATE_LIMIT)
+def generate_game_asset_endpoint(
+    request: Request,
+    payload: GameAssetIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate a mobile game asset (character, item, background, icon, or UI element).
+
+    The asset type and size preset determine the output dimensions and the prompt
+    prefix injected before the user's description so the model produces output
+    suitable for direct use in a mobile game.
+    """
+    ok, limit, used = check_and_consume_image(db, user, 1)
+    if not ok:
+        raise HTTPException(status_code=402, detail=f"Monthly limit reached ({used}/{limit}). Upgrade needed.")
+
+    # Resolve dimensions from asset type + size so the worker can call generate_image
+    from ..ai.pipeline import _ASSET_DIMENSIONS
+    dims = _ASSET_DIMENSIONS.get(payload.asset_type, {}).get(payload.size, (512, 512))
+    width, height = dims
+
+    job = ImageJob(
+        user_id=user.id,
+        prompt=payload.prompt,
+        width=width,
+        height=height,
+        steps=payload.steps,
+        guidance=payload.guidance,
+        job_type=JobType.game_asset,
+        status=JobStatus.queued,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    q.enqueue(run_generate_game_asset, job.id, payload.asset_type, payload.size, payload.style)
+
+    return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value)
 
 
 @router.get("/{job_id}", response_model=JobOut)
@@ -77,7 +166,7 @@ def status(job_id: int, db: Session = Depends(get_db), user: User = Depends(get_
         raise HTTPException(status_code=404, detail="Not found")
 
     url = public_url_from_path(job.image_path) if job.image_path else None
-    return JobOut(id=job.id, status=job.status.value, image_url=url, error=job.error)
+    return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value, image_url=url, error=job.error)
 
 
 @router.get("/", response_model=list[JobOut])
@@ -88,6 +177,7 @@ def list_jobs(db: Session = Depends(get_db), user: User = Depends(get_current_us
         out.append(JobOut(
             id=j.id,
             status=j.status.value,
+            job_type=j.job_type.value,
             image_url=public_url_from_path(j.image_path) if j.image_path else None,
             error=j.error
         ))
