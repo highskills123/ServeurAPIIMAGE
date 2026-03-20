@@ -22,6 +22,7 @@ A self-hosted REST API for AI-powered image generation using Stable Diffusion (S
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
+- [Game Assets & Sprite Sheets](#game-assets--sprite-sheets)
 - [Rate Limiting](#rate-limiting)
 - [GPU & CPU Support](#gpu--cpu-support)
 - [Running Tests](#running-tests)
@@ -33,6 +34,8 @@ A self-hosted REST API for AI-powered image generation using Stable Diffusion (S
 
 - **Sign up / log in** and receive a JWT token. New accounts start on the **free** plan (20 images/month).
 - **Generate images** from a text prompt. Jobs are queued and processed asynchronously by GPU workers.
+- **Generate sprite sheets** – produce a rows×cols grid of animation frames in one API call.
+- **Generate mobile game assets** – character sprites, items, backgrounds, icons, and UI elements with type-specific prompt engineering and size presets.
 - **Poll job status** and get the image URL once generation is complete.
 - **Browse pricing plans** and upgrade via Stripe Checkout.
 - **Prompt caching** – identical prompts with the same parameters reuse the generated image for 24 hours (no GPU work repeated).
@@ -248,6 +251,8 @@ All authenticated endpoints require `Authorization: Bearer <token>`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/images/generate` | Submit a generation job. Rate-limited to 20 req/min per IP. |
+| `POST` | `/images/spritesheet` | Generate a sprite sheet (rows×cols animation frames). |
+| `POST` | `/images/game-asset` | Generate a mobile game asset (character, item, background, icon, or UI element). |
 | `GET`  | `/images/{job_id}` | Get the status and result of a job. |
 | `GET`  | `/images/` | List all jobs for the current user. |
 
@@ -275,12 +280,15 @@ All authenticated endpoints require `Authorization: Bearer <token>`.
 {
   "id": 1,
   "status": "queued",
+  "job_type": "image",
   "image_url": null,
   "error": null
 }
 ```
 
 `status` values: `queued` → `running` → `done` / `failed`
+
+`job_type` values: `image` | `spritesheet` | `game_asset`
 
 ### Billing
 
@@ -295,6 +303,76 @@ All authenticated endpoints require `Authorization: Bearer <token>`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET`  | `/health` | Returns `{ "ok": true }` when the API is up. |
+
+---
+
+## Game Assets & Sprite Sheets
+
+### Sprite Sheets — `POST /images/spritesheet`
+
+Generates a single PNG sprite sheet containing **rows × cols** animation frames of the requested subject. Every frame counts as one image against the user's monthly quota (a 2×4 sheet consumes 8 images).
+
+**Request body:**
+
+```json
+{
+  "prompt": "running knight character",
+  "rows": 2,
+  "cols": 4,
+  "frame_width": 128,
+  "frame_height": 128,
+  "steps": 4,
+  "guidance": 0.0
+}
+```
+
+| Field | Default | Rules |
+|-------|---------|-------|
+| `prompt` | — | 3–500 characters |
+| `rows` / `cols` | `2` / `4` | 1–8 |
+| `frame_width` / `frame_height` | `128` | One of: `64`, `128`, `256` |
+| `steps` | `4` | 1–50 |
+| `guidance` | `0.0` | Classifier-free guidance scale (0.0 = disabled) |
+
+The resulting image is a grid PNG of size `(cols × frame_width) × (rows × frame_height)`.
+
+---
+
+### Mobile Game Assets — `POST /images/game-asset`
+
+Generates a single mobile game asset with type-specific prompt engineering and size presets. The API automatically prepends a context prefix to your prompt so the model produces output suitable for direct use in a mobile game.
+
+**Request body:**
+
+```json
+{
+  "prompt": "a fire-breathing red dragon",
+  "asset_type": "character",
+  "size": "medium",
+  "style": "2D mobile game art",
+  "steps": 4,
+  "guidance": 0.0
+}
+```
+
+| Field | Default | Options |
+|-------|---------|---------|
+| `prompt` | — | 3–500 characters |
+| `asset_type` | `"character"` | `character`, `item`, `background`, `icon`, `ui_element` |
+| `size` | `"medium"` | `small`, `medium`, `large` |
+| `style` | `"2D mobile game art"` | Any string up to 100 characters |
+| `steps` | `4` | 1–50 |
+| `guidance` | `0.0` | Classifier-free guidance scale (0.0 = disabled) |
+
+**Output dimensions by asset type and size:**
+
+| Asset type | small | medium | large |
+|------------|-------|--------|-------|
+| `character` | 256×256 | 512×512 | 1024×1024 |
+| `item` | 256×256 | 256×256 | 512×512 |
+| `icon` | 256×256 | 256×256 | 512×512 |
+| `background` | 512×256 | 1024×512 | 1024×1024 |
+| `ui_element` | 256×128 | 512×256 | 1024×512 |
 
 ---
 
@@ -346,6 +424,16 @@ pytest tests/ -v
 | `test_generate_requires_auth` | No token → 401 |
 | `test_prompt_cache_reuses_image` | Cached image returned |
 | `test_monthly_limit_enforced` | Quota exceeded → 402 |
+| `test_spritesheet_full_flow` | POST spritesheet → grid PNG on disk |
+| `test_spritesheet_requires_auth` | No token → 401 |
+| `test_spritesheet_invalid_rows` | rows out of range → 422 |
+| `test_spritesheet_invalid_frame_size` | Bad frame size → 422 |
+| `test_spritesheet_quota_counts_frames` | rows×cols images consumed from quota |
+| `test_game_asset_character_full_flow` | POST game-asset → PNG on disk |
+| `test_game_asset_all_types_accepted` | All five asset types accepted |
+| `test_game_asset_invalid_type` | Unknown asset type → 422 |
+| `test_game_asset_requires_auth` | No token → 401 |
+| `test_game_asset_style_too_long` | style > 100 chars → 422 |
 
 ---
 
@@ -379,6 +467,23 @@ ServeurAPIIMAGE/
 │   └── worker.py                   # RQ worker entry point
 ├── nginx/
 │   └── nginx.conf                  # Reverse proxy + rate limiting config
+├── mobile/
+│   ├── assets/
+│   │   ├── icon.png                # App launcher icon
+│   │   ├── splash-icon.png         # Splash screen icon
+│   │   ├── favicon.png             # Web favicon
+│   │   ├── android-icon-background.png
+│   │   ├── android-icon-foreground.png
+│   │   └── android-icon-monochrome.png
+│   ├── src/
+│   │   ├── api.ts                  # API client (auth, generate, gallery)
+│   │   ├── context/AuthContext.tsx # Auth state provider
+│   │   └── screens/                # LoginScreen, SignupScreen, GenerateScreen, GalleryScreen, ProfileScreen
+│   ├── App.tsx                     # Navigation setup
+│   ├── package.json
+│   ├── app.json                    # Expo config
+│   ├── eas.json                    # EAS Build config (Android & web)
+│   └── README.md                   # Mobile app setup & deployment guide
 ├── docs/
 │   └── sample_output.png
 ├── docker-compose.yml
