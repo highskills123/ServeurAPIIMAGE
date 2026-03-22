@@ -7,7 +7,7 @@ from ..ai.pipeline import generate_image, generate_spritesheet, generate_game_as
 from ..jobs.queue import redis_client
 
 
-def run_generate(job_id: int, cache_key: Optional[str] = None, cache_ttl: int = 86400):
+def run_generate(job_id: int, cache_key: Optional[str] = None, cache_ttl: int = 86400, negative_prompt: str = ""):
     db: Session = SessionLocal()
     j = None
     try:
@@ -25,6 +25,7 @@ def run_generate(job_id: int, cache_key: Optional[str] = None, cache_ttl: int = 
             steps=j.steps,
             guidance=j.guidance,
             out_path=out_path,
+            negative_prompt=negative_prompt,
         )
 
         j.status = JobStatus.done
@@ -48,7 +49,7 @@ def run_generate(job_id: int, cache_key: Optional[str] = None, cache_ttl: int = 
         db.close()
 
 
-def run_generate_spritesheet(job_id: int):
+def run_generate_spritesheet(job_id: int, negative_prompt: str = ""):
     """RQ task: generate a sprite sheet and update the job record."""
     db: Session = SessionLocal()
     j = None
@@ -74,6 +75,7 @@ def run_generate_spritesheet(job_id: int):
             steps=j.steps,
             guidance=j.guidance,
             out_path=out_path,
+            negative_prompt=negative_prompt,
         )
 
         j.status = JobStatus.done
@@ -93,8 +95,8 @@ def run_generate_spritesheet(job_id: int):
         db.close()
 
 
-def run_generate_game_asset(job_id: int, asset_type: str, size: str, style: str):
-    """RQ task: generate a mobile game asset and update the job record."""
+def run_generate_game_asset(job_id: int, asset_type: str, size: str, style: str, negative_prompt: str = ""):
+    """RQ task: generate a mobile game or RPG asset and update the job record."""
     db: Session = SessionLocal()
     j = None
     try:
@@ -113,6 +115,7 @@ def run_generate_game_asset(job_id: int, asset_type: str, size: str, style: str)
             steps=j.steps,
             guidance=j.guidance,
             out_path=out_path,
+            negative_prompt=negative_prompt,
         )
 
         j.status = JobStatus.done

@@ -60,7 +60,8 @@ def _override_get_db():
 # ── Stub AI pipeline ───────────────────────────────────────────────────────────
 
 def _fake_generate_image(prompt: str, width: int, height: int,
-                         steps: int, guidance: float, out_path: str) -> str:
+                         steps: int, guidance: float, out_path: str,
+                         negative_prompt: str = "") -> str:
     """Creates a solid-colour PNG without loading torch or any AI model."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     img = Image.new("RGB", (width, height), color=(73, 109, 137))
@@ -77,6 +78,7 @@ def _fake_generate_spritesheet(
     steps: int,
     guidance: float,
     out_path: str,
+    negative_prompt: str = "",
 ) -> str:
     """Creates a solid-colour sprite sheet PNG without loading any AI model."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -93,6 +95,7 @@ def _fake_generate_game_asset(
     steps: int,
     guidance: float,
     out_path: str,
+    negative_prompt: str = "",
 ) -> str:
     """Creates a solid-colour game asset PNG without loading any AI model."""
     from app.ai.pipeline import _ASSET_DIMENSIONS
@@ -481,11 +484,17 @@ def test_game_asset_character_full_flow(client, tmp_path):
 
 
 def test_game_asset_all_types_accepted(client):
-    """All defined asset types should be accepted by the endpoint."""
+    """All defined asset types (original + RPG) should be accepted by the endpoint."""
     token = _signup_and_login(client, "alltype@example.com", "alltypepass1")
     headers = {"Authorization": f"Bearer {token}"}
 
-    for asset_type in ("character", "item", "background", "icon", "ui_element"):
+    all_types = (
+        # Original types
+        "character", "item", "background", "icon", "ui_element",
+        # RPG types
+        "hero", "enemy", "npc", "map_tile", "weapon", "armor", "boss", "portrait",
+    )
+    for asset_type in all_types:
         r = client.post("/images/game-asset",
                         json={"prompt": "test asset for game",
                               "asset_type": asset_type,
@@ -525,3 +534,221 @@ def test_game_asset_style_too_long(client):
                           "style": "x" * 101, "steps": 1, "guidance": 0.0},
                     headers=headers)
     assert r.status_code == 422
+
+
+# ── RPG asset tests ────────────────────────────────────────────────────────────
+
+def test_rpg_hero_asset(client, tmp_path):
+    """RPG hero asset is generated at the correct dimensions (medium → 512×512)."""
+    token = _signup_and_login(client, "rpghero@example.com", "rpgheropass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/game-asset",
+                    json={"prompt": "brave warrior with glowing sword",
+                          "asset_type": "hero",
+                          "size": "medium",
+                          "style": "pixel art RPG",
+                          "steps": 1,
+                          "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["job_type"] == "game_asset"
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done", f"Error: {r2.json().get('error')}"
+
+    filename = r2.json()["image_url"].split("/")[-1]
+    img = Image.open(os.path.join(str(tmp_path), "images", filename))
+    assert img.size == (512, 512), f"Unexpected hero size: {img.size}"
+
+
+def test_rpg_enemy_asset(client, tmp_path):
+    """RPG enemy asset is generated at the correct dimensions (large → 1024×1024)."""
+    token = _signup_and_login(client, "rpgenemy@example.com", "rpgenemypass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/game-asset",
+                    json={"prompt": "fire-breathing dragon monster",
+                          "asset_type": "enemy",
+                          "size": "large",
+                          "style": "2D pixel art",
+                          "steps": 1,
+                          "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done"
+
+    filename = r2.json()["image_url"].split("/")[-1]
+    img = Image.open(os.path.join(str(tmp_path), "images", filename))
+    assert img.size == (1024, 1024), f"Unexpected enemy size: {img.size}"
+
+
+def test_rpg_boss_asset_small(client, tmp_path):
+    """RPG boss smallest tier still starts at 512×512."""
+    token = _signup_and_login(client, "rpgboss@example.com", "rpgbosspass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/game-asset",
+                    json={"prompt": "dark overlord in black armour",
+                          "asset_type": "boss",
+                          "size": "small",
+                          "style": "2D pixel art",
+                          "steps": 1,
+                          "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done"
+
+    filename = r2.json()["image_url"].split("/")[-1]
+    img = Image.open(os.path.join(str(tmp_path), "images", filename))
+    assert img.size == (512, 512), f"Unexpected boss size: {img.size}"
+
+
+def test_rpg_map_tile_asset(client, tmp_path):
+    """RPG map tile is generated and returned successfully."""
+    token = _signup_and_login(client, "rpgmap@example.com", "rpgmappass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/game-asset",
+                    json={"prompt": "stone dungeon floor tile",
+                          "asset_type": "map_tile",
+                          "size": "small",
+                          "style": "2D pixel art top-down",
+                          "steps": 1,
+                          "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done"
+
+    filename = r2.json()["image_url"].split("/")[-1]
+    img = Image.open(os.path.join(str(tmp_path), "images", filename))
+    assert img.size == (256, 256), f"Unexpected map_tile size: {img.size}"
+
+
+def test_rpg_portrait_asset(client, tmp_path):
+    """RPG portrait asset is generated at the correct medium dimensions (512×512)."""
+    token = _signup_and_login(client, "rpgport@example.com", "rpgportpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/game-asset",
+                    json={"prompt": "elderly wizard with long white beard",
+                          "asset_type": "portrait",
+                          "size": "medium",
+                          "style": "painterly illustration",
+                          "steps": 1,
+                          "guidance": 0.0},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done"
+
+    filename = r2.json()["image_url"].split("/")[-1]
+    img = Image.open(os.path.join(str(tmp_path), "images", filename))
+    assert img.size == (512, 512), f"Unexpected portrait size: {img.size}"
+
+
+# ── negative_prompt tests ──────────────────────────────────────────────────────
+
+def test_generate_with_negative_prompt(client, tmp_path):
+    """Supplying a negative_prompt is accepted and the job completes successfully."""
+    token = _signup_and_login(client, "negprompt@example.com", "negpromptpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/generate",
+                    json={"prompt": "enchanted forest at dawn",
+                          "width": 256,
+                          "height": 256,
+                          "steps": 1,
+                          "guidance": 0.0,
+                          "negative_prompt": "blurry, low quality"},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done"
+
+
+def test_generate_negative_prompt_too_long(client):
+    """negative_prompt exceeding 300 characters should be rejected with 422."""
+    token = _signup_and_login(client, "neglong@example.com", "neglongpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/generate",
+                    json={"prompt": "a castle on a hill",
+                          "width": 256,
+                          "height": 256,
+                          "steps": 1,
+                          "guidance": 0.0,
+                          "negative_prompt": "x" * 301},
+                    headers=headers)
+    assert r.status_code == 422
+
+
+def test_spritesheet_with_negative_prompt(client, tmp_path):
+    """Sprite sheet generation accepts and uses a custom negative_prompt."""
+    token = _signup_and_login(client, "sneg@example.com", "snegpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/spritesheet",
+                    json={"prompt": "RPG hero walk cycle",
+                          "rows": 1,
+                          "cols": 4,
+                          "frame_width": 64,
+                          "frame_height": 64,
+                          "steps": 1,
+                          "guidance": 0.0,
+                          "negative_prompt": "blurry, deformed"},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done"
+
+
+def test_game_asset_with_negative_prompt(client, tmp_path):
+    """Game asset generation accepts and uses a custom negative_prompt."""
+    token = _signup_and_login(client, "ganeg@example.com", "ganegpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/game-asset",
+                    json={"prompt": "goblin archer",
+                          "asset_type": "enemy",
+                          "size": "small",
+                          "style": "pixel art",
+                          "steps": 1,
+                          "guidance": 0.0,
+                          "negative_prompt": "blurry, ugly"},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done"
+
+
+def test_rpg_asset_dimensions_table(client):
+    """All RPG asset types have correct dimension entries in the pipeline table."""
+    from app.ai.pipeline import _ASSET_DIMENSIONS, _ASSET_PROMPT_PREFIXES
+
+    rpg_types = ("hero", "enemy", "npc", "map_tile", "weapon", "armor", "boss", "portrait")
+    for atype in rpg_types:
+        assert atype in _ASSET_DIMENSIONS, f"Missing dimensions for {atype}"
+        assert atype in _ASSET_PROMPT_PREFIXES, f"Missing prompt prefix for {atype}"
+        for size in ("small", "medium", "large"):
+            assert size in _ASSET_DIMENSIONS[atype], f"Missing size '{size}' for {atype}"
+            w, h = _ASSET_DIMENSIONS[atype][size]
+            assert w >= 256 and h >= 256, f"{atype}/{size} dimensions too small: {w}×{h}"

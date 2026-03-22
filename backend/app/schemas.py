@@ -28,6 +28,7 @@ class GenerateIn(BaseModel):
     height: int = 1024
     steps: int = 4
     guidance: float = 0.0
+    negative_prompt: str = ""
 
     @field_validator("prompt")
     @classmethod
@@ -53,6 +54,13 @@ class GenerateIn(BaseModel):
             raise ValueError("Steps must be between 1 and 50")
         return v
 
+    @field_validator("negative_prompt")
+    @classmethod
+    def validate_negative_prompt(cls, v: str) -> str:
+        if len(v) > 300:
+            raise ValueError("negative_prompt must not exceed 300 characters")
+        return v
+
 
 class SpritesheetIn(BaseModel):
     prompt: str
@@ -62,6 +70,7 @@ class SpritesheetIn(BaseModel):
     frame_height: int = 128
     steps: int = 4
     guidance: float = 0.0
+    negative_prompt: str = ""
 
     @field_validator("prompt")
     @classmethod
@@ -94,14 +103,27 @@ class SpritesheetIn(BaseModel):
             raise ValueError("Steps must be between 1 and 50")
         return v
 
+    @field_validator("negative_prompt")
+    @classmethod
+    def validate_negative_prompt(cls, v: str) -> str:
+        if len(v) > 300:
+            raise ValueError("negative_prompt must not exceed 300 characters")
+        return v
+
 
 class GameAssetIn(BaseModel):
     prompt: str
-    asset_type: Literal["character", "item", "background", "icon", "ui_element"] = "character"
+    asset_type: Literal[
+        # Generic mobile-game types (original)
+        "character", "item", "background", "icon", "ui_element",
+        # RPG-specific types
+        "hero", "enemy", "npc", "map_tile", "weapon", "armor", "boss", "portrait",
+    ] = "character"
     size: Literal["small", "medium", "large"] = "medium"
     style: str = "2D mobile game art"
     steps: int = 4
     guidance: float = 0.0
+    negative_prompt: str = ""
 
     @field_validator("prompt")
     @classmethod
@@ -126,6 +148,13 @@ class GameAssetIn(BaseModel):
     def validate_steps(cls, v: int) -> int:
         if not (1 <= v <= 50):
             raise ValueError("Steps must be between 1 and 50")
+        return v
+
+    @field_validator("negative_prompt")
+    @classmethod
+    def validate_negative_prompt(cls, v: str) -> str:
+        if len(v) > 300:
+            raise ValueError("negative_prompt must not exceed 300 characters")
         return v
 
 

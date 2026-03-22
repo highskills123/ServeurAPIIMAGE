@@ -65,7 +65,7 @@ def generate(request: Request, payload: GenerateIn, db: Session = Depends(get_db
     db.commit()
     db.refresh(job)
 
-    q.enqueue(run_generate, job.id, cache_key, _CACHE_TTL)
+    q.enqueue(run_generate, job.id, cache_key, _CACHE_TTL, payload.negative_prompt)
 
     return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value)
 
@@ -112,7 +112,7 @@ def generate_spritesheet_endpoint(
     db.commit()
     db.refresh(job)
 
-    q.enqueue(run_generate_spritesheet, job.id)
+    q.enqueue(run_generate_spritesheet, job.id, payload.negative_prompt)
 
     return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value)
 
@@ -154,7 +154,7 @@ def generate_game_asset_endpoint(
     db.commit()
     db.refresh(job)
 
-    q.enqueue(run_generate_game_asset, job.id, payload.asset_type, payload.size, payload.style)
+    q.enqueue(run_generate_game_asset, job.id, payload.asset_type, payload.size, payload.style, payload.negative_prompt)
 
     return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value)
 
