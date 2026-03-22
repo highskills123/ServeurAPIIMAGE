@@ -112,7 +112,7 @@ def generate_spritesheet_endpoint(
     db.commit()
     db.refresh(job)
 
-    q.enqueue(run_generate_spritesheet, job.id, payload.negative_prompt)
+    q.enqueue(run_generate_spritesheet, job.id, payload.negative_prompt, payload.style)
 
     return JobOut(id=job.id, status=job.status.value, job_type=job.job_type.value)
 

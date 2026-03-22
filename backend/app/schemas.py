@@ -71,6 +71,7 @@ class SpritesheetIn(BaseModel):
     steps: int = 4
     guidance: float = 0.0
     negative_prompt: str = ""
+    style: str = "2D sprite art"
 
     @field_validator("prompt")
     @classmethod
@@ -108,6 +109,14 @@ class SpritesheetIn(BaseModel):
     def validate_negative_prompt(cls, v: str) -> str:
         if len(v) > 300:
             raise ValueError("negative_prompt must not exceed 300 characters")
+        return v
+
+    @field_validator("style")
+    @classmethod
+    def validate_style(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) > 100:
+            raise ValueError("style must not exceed 100 characters")
         return v
 
 
