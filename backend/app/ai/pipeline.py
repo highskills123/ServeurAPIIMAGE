@@ -4,7 +4,7 @@ try:
     _TORCH_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _TORCH_AVAILABLE = False
-from PIL import Image as _PILImage
+from PIL import Image as _PILImage, ImageEnhance as _PILEnhance
 from ..config import settings
 
 _pipe = None
@@ -12,22 +12,48 @@ _pipe = None
 # Minimum generation size for acceptable image quality
 _MIN_GEN_SIZE = 256
 
+# Default negative prompt applied to every generation for baseline quality
+_DEFAULT_NEGATIVE_PROMPT = (
+    "blurry, low quality, noise, grainy, deformed, ugly, distorted, artifacts, "
+    "watermark, text, signature, poorly drawn, bad anatomy, duplicate, extra limbs"
+)
+
 # Asset type → (width, height) per size tier
 _ASSET_DIMENSIONS: dict[str, dict[str, tuple[int, int]]] = {
+    # Generic mobile-game assets (original)
     "character":  {"small": (256, 256), "medium": (512, 512),  "large": (1024, 1024)},
     "item":       {"small": (256, 256), "medium": (256, 256),  "large": (512, 512)},
     "icon":       {"small": (256, 256), "medium": (256, 256),  "large": (512, 512)},
     "background": {"small": (512, 256), "medium": (1024, 512), "large": (1024, 1024)},
     "ui_element": {"small": (256, 128), "medium": (512, 256),  "large": (1024, 512)},
+    # RPG-specific asset types
+    "hero":       {"small": (256, 256), "medium": (512, 512),  "large": (1024, 1024)},
+    "enemy":      {"small": (256, 256), "medium": (512, 512),  "large": (1024, 1024)},
+    "npc":        {"small": (256, 256), "medium": (512, 512),  "large": (512, 512)},
+    "map_tile":   {"small": (256, 256), "medium": (512, 512),  "large": (1024, 1024)},
+    "weapon":     {"small": (256, 256), "medium": (256, 256),  "large": (512, 512)},
+    "armor":      {"small": (256, 256), "medium": (512, 512),  "large": (512, 512)},
+    "boss":       {"small": (512, 512), "medium": (1024, 512), "large": (1024, 1024)},
+    "portrait":   {"small": (256, 256), "medium": (512, 512),  "large": (512, 512)},
 }
 
 # Asset type → descriptive prompt prefix for game context
 _ASSET_PROMPT_PREFIXES: dict[str, str] = {
+    # Generic mobile-game assets (original)
     "character":  "2D mobile game character sprite, isolated on white background,",
     "item":       "2D mobile game item sprite, isolated on white background,",
     "icon":       "mobile game icon, flat design, isolated on white background,",
     "background": "mobile game background scene, seamless parallax-ready,",
     "ui_element": "mobile game UI element, flat design, clean edges,",
+    # RPG-specific asset types
+    "hero":       "RPG hero character sprite, 2D pixel art, high detail, isolated on transparent background,",
+    "enemy":      "RPG enemy monster sprite, 2D pixel art, high detail, isolated on transparent background,",
+    "npc":        "RPG NPC character sprite, 2D pixel art, isolated on transparent background,",
+    "map_tile":   "RPG top-down map tile, seamless 2D pixel art tileset, clean edges,",
+    "weapon":     "RPG weapon item sprite, 2D pixel art, isolated on white background,",
+    "armor":      "RPG armor equipment sprite, 2D pixel art, isolated on white background,",
+    "boss":       "RPG boss monster, large detailed sprite, 2D pixel art, epic design, isolated on transparent background,",
+    "portrait":   "RPG character portrait, detailed face close-up, 2D illustration, painterly style,",
 }
 
 
@@ -56,20 +82,47 @@ def get_pipe():
         )
         _pipe.to(device)
         if device == "cuda":
-            _pipe.enable_attention_slicing()
+            # Prefer memory-efficient attention (xformers) for speed and quality;
+            # fall back to attention slicing when xformers is not installed.
+            try:
+                _pipe.enable_xformers_memory_efficient_attention()
+            except Exception:
+                _pipe.enable_attention_slicing()
     return _pipe
 
 
-def generate_image(prompt: str, width: int, height: int, steps: int, guidance: float, out_path: str) -> str:
+def _enhance_quality(img: "_PILImage.Image") -> "_PILImage.Image":
+    """Apply subtle post-processing to improve perceived sharpness and contrast.
+
+    These lightweight PIL operations are applied after every AI inference to
+    remove the slight softness that diffusion models commonly produce.
+    """
+    img = _PILEnhance.Sharpness(img).enhance(1.4)
+    img = _PILEnhance.Contrast(img).enhance(1.05)
+    return img
+
+
+def generate_image(
+    prompt: str,
+    width: int,
+    height: int,
+    steps: int,
+    guidance: float,
+    out_path: str,
+    negative_prompt: str = "",
+) -> str:
     pipe = get_pipe()
+    neg = negative_prompt or _DEFAULT_NEGATIVE_PROMPT
     img = pipe(
         prompt,
+        negative_prompt=neg,
         num_inference_steps=steps,
         guidance_scale=guidance,
         width=width,
-        height=height
+        height=height,
     ).images[0]
-    img.save(out_path)
+    img = _enhance_quality(img)
+    img.save(out_path, optimize=True)
     return out_path
 
 
@@ -82,13 +135,16 @@ def generate_spritesheet(
     steps: int,
     guidance: float,
     out_path: str,
+    negative_prompt: str = "",
 ) -> str:
     """Generate a sprite sheet by creating rows*cols frames and stitching them into a grid.
 
     Each frame is generated at max(_MIN_GEN_SIZE, frame_width) for quality then
     resized to the requested frame dimensions before being placed in the sheet.
+    A negative prompt is applied to every frame to avoid common quality issues.
     """
     pipe = get_pipe()
+    neg = negative_prompt or _DEFAULT_NEGATIVE_PROMPT
     gen_w = max(_MIN_GEN_SIZE, frame_width)
     gen_h = max(_MIN_GEN_SIZE, frame_height)
 
@@ -98,18 +154,21 @@ def generate_spritesheet(
         for col in range(cols):
             raw = pipe(
                 prompt,
+                negative_prompt=neg,
                 num_inference_steps=steps,
                 guidance_scale=guidance,
                 width=gen_w,
                 height=gen_h,
             ).images[0].convert("RGBA")
 
+            raw = _enhance_quality(raw)
+
             if raw.size != (frame_width, frame_height):
                 raw = raw.resize((frame_width, frame_height), _PILImage.LANCZOS)
 
             sheet.paste(raw, (col * frame_width, row * frame_height))
 
-    sheet.save(out_path, format="PNG")
+    sheet.save(out_path, format="PNG", optimize=True)
     return out_path
 
 
@@ -121,11 +180,13 @@ def generate_game_asset(
     steps: int,
     guidance: float,
     out_path: str,
+    negative_prompt: str = "",
 ) -> str:
-    """Generate a mobile game asset with type-specific prompt engineering.
+    """Generate a mobile game or RPG asset with type-specific prompt engineering.
 
     Prepends a context prefix and appends the requested style to the user's
-    prompt so the model produces output that fits common mobile game workflows.
+    prompt so the model produces output that fits common mobile/RPG game workflows.
+    A negative prompt is applied to avoid low-quality or off-style output.
     """
     prefix = _ASSET_PROMPT_PREFIXES.get(asset_type, "2D mobile game asset,")
     full_prompt = f"{prefix} {style}, {prompt}"
@@ -140,6 +201,7 @@ def generate_game_asset(
         steps=steps,
         guidance=guidance,
         out_path=out_path,
+        negative_prompt=negative_prompt,
     )
 
 
