@@ -49,7 +49,7 @@ def run_generate(job_id: int, cache_key: Optional[str] = None, cache_ttl: int = 
         db.close()
 
 
-def run_generate_spritesheet(job_id: int, negative_prompt: str = ""):
+def run_generate_spritesheet(job_id: int, negative_prompt: str = "", style: str = ""):
     """RQ task: generate a sprite sheet and update the job record."""
     db: Session = SessionLocal()
     j = None
@@ -76,6 +76,7 @@ def run_generate_spritesheet(job_id: int, negative_prompt: str = ""):
             guidance=j.guidance,
             out_path=out_path,
             negative_prompt=negative_prompt,
+            style=style,
         )
 
         j.status = JobStatus.done

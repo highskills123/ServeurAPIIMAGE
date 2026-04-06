@@ -37,6 +37,30 @@ _ASSET_DIMENSIONS: dict[str, dict[str, tuple[int, int]]] = {
     "portrait":   {"small": (256, 256), "medium": (512, 512),  "large": (512, 512)},
 }
 
+# Sprite-sheet style → descriptive prompt prefix injected before the user prompt.
+# The key "dark_gothic_rpg" is the canonical preset for dark gothic fantasy games.
+_SPRITESHEET_STYLE_PREFIXES: dict[str, str] = {
+    "dark_gothic_rpg": (
+        "dark gothic fantasy RPG sprite sheet, multiple consistent animation frames, "
+        "gloomy atmosphere, dark medieval, shadowy silhouette, deep shadows, "
+        "dark muted color palette, sinister aesthetic, isolated on black background,"
+    ),
+    "pixel_art": (
+        "2D pixel art sprite sheet, multiple animation frames, retro game style, "
+        "pixel perfect, clean edges, isolated on transparent background,"
+    ),
+    "cartoon": (
+        "cartoon 2D sprite sheet, multiple animation frames, vibrant colors, "
+        "clean outlines, mobile game style, isolated on white background,"
+    ),
+}
+
+# Fallback sprite-sheet context prepended to every generation regardless of style
+_SPRITESHEET_BASE_CONTEXT = (
+    "sprite sheet animation frames, same character across all frames, "
+    "consistent art style, game-ready,"
+)
+
 # Asset type → descriptive prompt prefix for game context
 _ASSET_PROMPT_PREFIXES: dict[str, str] = {
     # Generic mobile-game assets (original)
@@ -136,15 +160,26 @@ def generate_spritesheet(
     guidance: float,
     out_path: str,
     negative_prompt: str = "",
+    style: str = "",
 ) -> str:
     """Generate a sprite sheet by creating rows*cols frames and stitching them into a grid.
 
     Each frame is generated at max(_MIN_GEN_SIZE, frame_width) for quality then
     resized to the requested frame dimensions before being placed in the sheet.
+    A style prefix and base sprite-sheet context are prepended to every frame
+    prompt so the model produces game-ready animation frames.
     A negative prompt is applied to every frame to avoid common quality issues.
     """
     pipe = get_pipe()
     neg = negative_prompt or _DEFAULT_NEGATIVE_PROMPT
+
+    # Build the full prompt: style prefix + base sprite-sheet context + user prompt
+    style_prefix = _SPRITESHEET_STYLE_PREFIXES.get(style, f"{style}," if style else "")
+    if style_prefix:
+        full_prompt = f"{style_prefix} {_SPRITESHEET_BASE_CONTEXT} {prompt}"
+    else:
+        full_prompt = f"{_SPRITESHEET_BASE_CONTEXT} {prompt}"
+
     gen_w = max(_MIN_GEN_SIZE, frame_width)
     gen_h = max(_MIN_GEN_SIZE, frame_height)
 
@@ -153,7 +188,7 @@ def generate_spritesheet(
     for row in range(rows):
         for col in range(cols):
             raw = pipe(
-                prompt,
+                full_prompt,
                 negative_prompt=neg,
                 num_inference_steps=steps,
                 guidance_scale=guidance,

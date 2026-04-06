@@ -35,6 +35,18 @@ export interface GenerateIn {
   guidance?: number;
 }
 
+export interface SpritesheetIn {
+  prompt: string;
+  rows?: number;
+  cols?: number;
+  frame_width?: number;
+  frame_height?: number;
+  steps?: number;
+  guidance?: number;
+  negative_prompt?: string;
+  style?: string;
+}
+
 export interface PlanInfo {
   plan: string;
   monthly_limit: number;
@@ -99,6 +111,17 @@ export async function generateImage(
   params: GenerateIn
 ): Promise<JobOut> {
   return request<JobOut>("/images/generate", {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(params),
+  });
+}
+
+export async function generateSpritesheet(
+  token: string,
+  params: SpritesheetIn
+): Promise<JobOut> {
+  return request<JobOut>("/images/spritesheet", {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify(params),
