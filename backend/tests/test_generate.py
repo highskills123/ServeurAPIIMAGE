@@ -79,6 +79,7 @@ def _fake_generate_spritesheet(
     guidance: float,
     out_path: str,
     negative_prompt: str = "",
+    style: str = "",
 ) -> str:
     """Creates a solid-colour sprite sheet PNG without loading any AI model."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -752,3 +753,91 @@ def test_rpg_asset_dimensions_table(client):
             assert size in _ASSET_DIMENSIONS[atype], f"Missing size '{size}' for {atype}"
             w, h = _ASSET_DIMENSIONS[atype][size]
             assert w >= 256 and h >= 256, f"{atype}/{size} dimensions too small: {w}×{h}"
+
+
+# ── Spritesheet style tests ────────────────────────────────────────────────────
+
+def test_spritesheet_with_style(client, tmp_path):
+    """Sprite sheet generation accepts a style field and completes successfully."""
+    token = _signup_and_login(client, "sstyle@example.com", "sstylepass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post("/images/spritesheet",
+                    json={"prompt": "dark knight walking animation",
+                          "rows": 1,
+                          "cols": 4,
+                          "frame_width": 64,
+                          "frame_height": 64,
+                          "steps": 1,
+                          "guidance": 0.0,
+                          "style": "dark_gothic_rpg"},
+                    headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["job_type"] == "spritesheet"
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done", f"Error: {r2.json().get('error')}"
+
+
+def test_spritesheet_dark_gothic_rpg_preset(client, tmp_path):
+    """Dark gothic RPG preset produces a valid sprite sheet at correct dimensions."""
+    token = _signup_and_login(client, "gothic@example.com", "gothicpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payload = {
+        "prompt": "undead warrior with cursed sword",
+        "rows": 2,
+        "cols": 4,
+        "frame_width": 128,
+        "frame_height": 128,
+        "steps": 1,
+        "guidance": 0.0,
+        "style": "dark_gothic_rpg",
+        "negative_prompt": "bright colors, anime, cartoon",
+    }
+    r = client.post("/images/spritesheet", json=payload, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["job_type"] == "spritesheet"
+
+    job_id = r.json()["id"]
+    r2 = client.get(f"/images/{job_id}", headers=headers)
+    assert r2.json()["status"] == "done", f"Error: {r2.json().get('error')}"
+
+    image_url = r2.json()["image_url"]
+    assert image_url is not None
+
+    filename = image_url.split("/")[-1]
+    image_file = os.path.join(str(tmp_path), "images", filename)
+    assert os.path.isfile(image_file), f"Dark gothic sprite sheet not found at {image_file}"
+
+    img = Image.open(image_file)
+    assert img.size == (4 * 128, 2 * 128), f"Unexpected dark gothic sheet size: {img.size}"
+
+
+def test_spritesheet_style_too_long(client):
+    """style field must not exceed 100 characters."""
+    token = _signup_and_login(client, "slong@example.com", "slongpass1")
+    headers = {"Authorization": f"Bearer {token}"}
+    r = client.post("/images/spritesheet",
+                    json={"prompt": "knight", "rows": 1, "cols": 2,
+                          "frame_width": 64, "frame_height": 64,
+                          "steps": 1, "guidance": 0.0,
+                          "style": "x" * 101},
+                    headers=headers)
+    assert r.status_code == 422
+
+
+def test_spritesheet_style_table(client):
+    """Dark gothic RPG style prefix is registered in the pipeline table."""
+    from app.ai.pipeline import _SPRITESHEET_STYLE_PREFIXES, _SPRITESHEET_BASE_CONTEXT
+
+    assert "dark_gothic_rpg" in _SPRITESHEET_STYLE_PREFIXES, \
+        "dark_gothic_rpg must be in the spritesheet style prefix table"
+    prefix = _SPRITESHEET_STYLE_PREFIXES["dark_gothic_rpg"]
+    assert len(prefix) > 10, "dark_gothic_rpg prefix should be a meaningful description"
+
+    assert _SPRITESHEET_BASE_CONTEXT, "Base sprite-sheet context must be non-empty"
+    assert "sprite sheet" in _SPRITESHEET_BASE_CONTEXT.lower() or \
+           "animation" in _SPRITESHEET_BASE_CONTEXT.lower(), \
+        "Base context should reference sprite sheet or animation"

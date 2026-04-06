@@ -11,6 +11,7 @@ import { AuthProvider, useAuth } from "./src/context/AuthContext";
 import LoginScreen from "./src/screens/LoginScreen";
 import SignupScreen from "./src/screens/SignupScreen";
 import GenerateScreen from "./src/screens/GenerateScreen";
+import SpritesheetScreen from "./src/screens/SpritesheetScreen";
 import GalleryScreen from "./src/screens/GalleryScreen";
 import ProfileScreen from "./src/screens/ProfileScreen";
 
@@ -41,6 +42,17 @@ function AppTabs() {
           tabBarLabel: "Create",
           tabBarIcon: ({ color }) => (
             <Text style={{ fontSize: 18, color }}>✨</Text>
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Spritesheet"
+        component={SpritesheetScreen}
+        options={{
+          title: "Sprite Sheet",
+          tabBarLabel: "Sprites",
+          tabBarIcon: ({ color }) => (
+            <Text style={{ fontSize: 18, color }}>🦇</Text>
           ),
         }}
       />
